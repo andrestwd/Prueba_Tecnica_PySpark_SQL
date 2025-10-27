@@ -1,0 +1,33 @@
+# Ejercicio # 3
+conn = sqlite3.connect('test.db')
+
+####PROGRAME SU RESPUESTA DENTRO DEL CONN.EXECUTE ENTRE LAS COMILLAS
+
+cursor = conn.execute('''
+WITH Ranking_Puntos AS (
+    -- 1. Asignar un quintil (NTILE) a cada equipo basado en sus puntos, ordenando de mayor a menor.
+    SELECT
+        equipo,
+        puntos,
+        -- NTILE(5) divide los equipos en 5 grupos de igual tamaño
+        -- El grupo 1 (Quintil 1) es el de mayor puntaje
+        NTILE(5) OVER (ORDER BY puntos DESC, gol_diferencia DESC) AS Quintil
+    FROM Resultados_Qatar
+)
+-- 2. Seleccionar los equipos que caen en el quintil más alto (Quintil 1).
+SELECT
+    equipo,
+    puntos
+FROM Ranking_Puntos
+WHERE Quintil = 1
+ORDER BY puntos DESC;
+''')
+
+print("\n--- Equipos Élite (Clasificados Automáticamente) ---")
+print("Equipo | Puntos Acumulados")
+print("-" * 40)
+for row in cursor:
+    # Formatear la salida
+    print(f"{row[0]:<25} {row[1]}")
+
+conn.close()

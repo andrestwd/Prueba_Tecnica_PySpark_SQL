@@ -1,0 +1,124 @@
+from typing import cast
+import sys
+from pyspark import SparkConf, SparkContext
+from pyspark.sql import SparkSession
+from pyspark.sql.types import *
+from pyspark.sql.functions import explode, col, desc, avg, min, max, rank, asc, round
+from pyspark.sql import Window
+from math import sqrt
+from pyspark.sql.functions import udf
+
+spark = SparkSession.builder\
+    .master("local")\
+    .appName("Colab")\
+    .config('spark.ui.port', '4050')\
+    .getOrCreate()
+
+####### PROGRAME SU RESPUESTA AQUI ##############
+
+# PySpark: Pregunta 5: Centro Educativo más Céntrico por Titularidad (5.1 - 5.2)
+
+FILE_PATH = "/content/CENTROS_EDUCATIVOS_MADRID.json"
+GROUPING_COL = "centro_titularidad"
+
+print("5.1: Leyendo el archivo CENTROS_EDUCATIVOS_MADRID.json...")
+
+try:
+    # Cargar el DataFrame y seleccionar columnas con el nombre corregido
+    df_centros = spark.read.option("multiline", "true").json(FILE_PATH)
+    df_centros_clean = df_centros.select(
+        col("centro_nombre").alias("nombre_unidad_educativa"),
+        col(GROUPING_COL),
+        col("direccion_coor_x").cast(DoubleType()).alias("coord_x"),
+        col("direccion_coor_y").cast(DoubleType()).alias("coord_y")
+    ).dropna(subset=[GROUPING_COL, "coord_x", "coord_y"])
+    
+    # 5.2.1: Determinar el punto promedio (centroide)
+    df_centroides = df_centros_clean.groupBy(GROUPING_COL).agg(
+        avg("coord_x").alias("centroide_x"),
+        avg("coord_y").alias("centroide_y")
+    )
+    df_con_centroides = df_centros_clean.join(df_centroides, on=GROUPING_COL, how="inner")
+
+    # 5.2.2: Crear UDF para Distancia Euclidiana
+    def distancia_euclidiana(x1: float, y1: float, x2: float, y2: float) -> float:
+        """Calcula la distancia euclidiana entre dos puntos."""
+        if None in (x1, y1, x2, y2):
+            return float('inf') 
+        return sqrt((x2 - x1)**2 + (y2 - y1)**2)
+
+    udf_distancia = udf(distancia_euclidiana, DoubleType())
+
+    df_distancia = df_con_centroides.withColumn(
+        "distancia_al_centroide",
+        udf_distancia(col("coord_x"), col("coord_y"), col("centroide_x"), col("centroide_y"))
+    )
+
+    # 5.2.3: Identificar el centro más céntrico
+    window_min_distancia = Window.partitionBy(GROUPING_COL).orderBy(col("distancia_al_centroide").asc())
+    df_ranking = df_distancia.withColumn("rank_distancia", rank().over(window_min_distancia))
+
+    df_centros_reunion = df_ranking.filter(col("rank_distancia") == 1).select(
+        col(GROUPING_COL),
+        col("nombre_unidad_educativa").alias("centro_reunion_elegido"),
+        round(col("distancia_al_centroide"), 4).alias("distancia_al_centroide"),
+        round(col("centroide_x"), 4).alias("centroide_x"),
+        round(col("centroide_y"), 4).alias("centroide_y")
+    ).orderBy(col(GROUPING_COL).asc())
+
+    # Mostrar resultado de 5.2
+    print("\n--- Resultado: Centro Más Céntrico por Tipo de Titularidad (5.2) ---")
+    df_centros_reunion.show(truncate=False)
+
+
+except Exception as e:
+    print(f"Error fatal durante el procesamiento: {e}")
+    spark.stop()
+    sys.exit(1)
+
+
+# 5.3 Respuesta: 
+# ===============================================
+
+print("\n5.3: Exportando el resultado (df_centros_reunion) en 3 formatos a /tmp...")
+
+BASE_PATH = "/tmp/centros_reunion_export"
+
+# 1. Exportar en formato Parquet
+print("-> Exportando a Parquet...")
+df_centros_reunion.write.mode("overwrite").parquet(f"{BASE_PATH}_parquet")
+
+# 2. Exportar en formato JSON
+print("-> Exportando a JSON...")
+df_centros_reunion.write.mode("overwrite").json(f"{BASE_PATH}_json")
+
+# 3. Exportar en formato CSV (separado por '|')
+print("-> Exportando a CSV (separador '|')...")
+df_centros_reunion.write.mode("overwrite").csv(
+    f"{BASE_PATH}_csv", 
+    sep="|", 
+    header=True
+)
+
+print("Exportación completa. Los archivos de salida están en /tmp/.")
+
+
+# 5.3 Justificación: 
+#
+# 5.4. Qué formato utilizaría para almacenar y procesar grandes volúmenes de datos en Databricks. Justifique porqué no seleccionó los otros dos formatos.
+#
+# Formato recomendado: PARQUET (o Delta Lake, que se basa en Parquet).
+#
+# Justificación de Parquet:
+# 1. Almacenamiento Columnar: Parquet organiza los datos por columnas. Esto es fundamental para PySpark/Spark, ya que permite la 'proyección de columnas' (leer solo las columnas necesarias) y la 'eliminación de predicados' (saltarse bloques de datos que no cumplen con los filtros WHERE). Esto reduce drásticamente el I/O y mejora la velocidad de consulta.
+# 2. Optimización y Compresión: Soporta esquemas y tipos de datos complejos y ofrece una alta eficiencia de compresión (ej. Snappy o Gzip), reduciendo el espacio de almacenamiento y los costos.
+# 3. Integración Nativa: Parquet es el formato optimizado y nativo del ecosistema Hadoop/Spark/Databricks, lo que garantiza el mejor rendimiento.
+#
+# Justificación de exclusión de CSV y JSON:
+# 1. CSV (Comma Separated Values): Es un formato basado en filas y sin esquema incrustado. Es el más lento para Big Data porque obliga a Spark a leer y parsear el archivo completo para cada consulta, sin la posibilidad de aplicar optimizaciones columnares.
+# 2. JSON (JavaScript Object Notation): Es un formato basado en filas. Aunque legible y flexible, no soporta la optimización de proyección de columnas y puede ser costoso de leer en grandes volúmenes, especialmente si el esquema no es consistente entre registros o si se utiliza la inferencia de esquema.
+#
+#################################################
+
+# Detener la sesión de Spark
+spark.stop()

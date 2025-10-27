@@ -1,0 +1,82 @@
+# Ejercicio # 1
+
+import sqlite3
+import unicodedata
+
+conn = sqlite3.connect('test.db')
+print("Base de datos abierta con exito") # Confirmación de conexión
+
+# Creamos una función personalizada para limpiar nombres
+def limpiar_nombre(nombre):
+    """Elimina acentos, puntos y normaliza a mayúsculas"""
+    if nombre is None:
+        return None
+    # Normalizar usando NFKD (descompone caracteres con acentos)
+    nombre = unicodedata.normalize('NFKD', nombre)
+    # Convertir a ASCII (elimina acentos)
+    nombre = nombre.encode('ASCII', 'ignore').decode('ASCII')
+    # Eliminar puntos, comillas extra y espacios en blanco
+    return nombre.replace('.', '').replace('"', '').strip().upper()
+
+# Registrar la función en SQLite para usarla en el query
+conn.create_function("LIMPIAR", 1, limpiar_nombre)
+
+####PROGRAME SU RESPUESTA DENTRO DEL CONN.EXECUTE ENTRE LAS COMILLAS
+
+cursor = conn.execute('''
+WITH partidos_procesados AS (
+  -- Resultados del Equipo 1
+  SELECT 
+    LIMPIAR(SUBSTR(partido, 1, INSTR(partido, ' vs.') - 1)) AS equipo,
+    -- Normalizar el GRUPO (ej: 'GRUPO A' -> 'A')
+    TRIM(REPLACE(grupo, 'GRUPO', '')) AS grupo,
+    -- Goles a Favor (antes de la coma)
+    CAST(TRIM(REPLACE(SUBSTR(resultado, 1, INSTR(resultado, ',') - 1), ' ', '')) AS INTEGER) AS goles_favor,
+    -- Goles en Contra (despues de la coma)
+    CAST(TRIM(REPLACE(SUBSTR(resultado, INSTR(resultado, ',') + 1), ')', '')) AS INTEGER) AS goles_contra
+  FROM Partidos
+  
+  UNION ALL
+  
+  -- Resultados del Equipo 2
+  SELECT 
+    LIMPIAR(SUBSTR(partido, INSTR(partido, ' vs.') + 4)) AS equipo, -- Corregido: ' vs.' tiene 4 caracteres.
+    TRIM(REPLACE(grupo, 'GRUPO', '')) AS grupo,
+    -- Goles a Favor (despues de la coma)
+    CAST(TRIM(REPLACE(SUBSTR(resultado, INSTR(resultado, ',') + 1), ')', '')) AS INTEGER) AS goles_favor,
+    -- Goles en Contra (antes de la coma)
+    CAST(TRIM(REPLACE(SUBSTR(resultado, 1, INSTR(resultado, ',') - 1), ' ', '')) AS INTEGER) AS goles_contra
+  FROM Partidos
+),
+resultados_calculados AS (
+  SELECT
+    equipo,
+    grupo,
+    (goles_favor - goles_contra) AS gol_diferencia,
+    CASE
+      WHEN goles_favor > goles_contra THEN 3
+      WHEN goles_favor = goles_contra THEN 1
+      ELSE 0
+    END AS puntos
+  FROM partidos_procesados
+  -- Filtramos registros con datos nulos o no válidos para evitar errores de SUM
+  WHERE goles_favor IS NOT NULL AND goles_contra IS NOT NULL
+)
+SELECT
+  equipo,
+  'GRUPO ' || grupo AS grupo_completo, -- Volver a agregar 'GRUPO ' para el output
+  SUM(puntos) AS "Total Puntos Obtenidos",
+  SUM(gol_diferencia) AS "Sumatoria del Gol Diferencia"
+FROM resultados_calculados
+GROUP BY equipo, grupo
+ORDER BY grupo, "Total Puntos Obtenidos" DESC, "Sumatoria del Gol Diferencia" DESC
+''') 
+
+print("Equipo | Grupo | Puntos | Gol Diferencia")
+print("-" * 50)
+for row in cursor:
+  # Formatear la salida para mayor claridad
+  print(f"{row[0]:<25} {row[1]:<8} {row[2]:<6} {row[3]}")
+  
+conn.close()
+print("Valores calculados con éxito y conexión cerrada.")

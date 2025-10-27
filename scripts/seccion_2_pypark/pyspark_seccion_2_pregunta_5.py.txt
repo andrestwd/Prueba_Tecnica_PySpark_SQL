@@ -1,0 +1,121 @@
+from typing import cast
+import sys
+from pyspark import SparkConf, SparkContext
+from pyspark.sql import SparkSession
+from pyspark.sql.types import *
+from pyspark.sql.functions import explode, col, desc, avg, min, max, rank, asc, round
+from pyspark.sql import Window
+from math import sqrt
+from pyspark.sql.functions import udf
+
+spark = SparkSession.builder\
+    .master("local")\
+    .appName("Colab")\
+    .config('spark.ui.port', '4050')\
+    .getOrCreate()
+
+####### PROGRAME SU RESPUESTA AQUI ##############
+
+# PySpark: Pregunta 5: Centro Educativo más Céntrico por Titularidad
+
+
+FILE_PATH = "/content/CENTROS_EDUCATIVOS_MADRID.json"
+GROUPING_COL = "centro_titularidad"
+
+# 5.1 Preparar el programa de pyspark que permita leer el archivo JSON.
+print("5.1: Leyendo el archivo CENTROS_EDUCATIVOS_MADRID.json...")
+
+try:
+    # 1. Cargar el DataFrame. Se usa inferSchema=True para deducir la estructura.
+    # Se añade la opción multiLine=True para manejar JSONs que ocupan múltiples líneas.
+    df_centros = spark.read.option("multiline", "true").json(FILE_PATH)
+    
+    # 2. Seleccionar, limpiar y castear coordenadas a Double.
+    
+    df_centros_clean = df_centros.select(
+        col("centro_nombre").alias("nombre_unidad_educativa"),
+        col(GROUPING_COL),
+        col("direccion_coor_x").cast(DoubleType()).alias("coord_x"),
+        col("direccion_coor_y").cast(DoubleType()).alias("coord_y")
+    ).dropna(subset=[GROUPING_COL, "coord_x", "coord_y"])
+    
+    print(f"Total de centros con coordenadas válidas: {df_centros_clean.count()}")
+
+except Exception as e:
+    print(f"Error al leer el archivo JSON desde {FILE_PATH}: {e}")
+    # Detener Spark en caso de error fatal de lectura
+    spark.stop()
+    sys.exit(1)
+
+
+# 5.2.1 Determinar el promedio de las coordenadas "x" y "y" por cada grupo "centro_titularidad".
+print("\n5.2.1: Calculando el punto promedio (centroide) por titularidad...")
+
+df_centroides = df_centros_clean.groupBy(GROUPING_COL).agg(
+    avg("coord_x").alias("centroide_x"),
+    avg("coord_y").alias("centroide_y")
+)
+
+# Unir el DataFrame original con los centroides para tener las coordenadas del centroide en cada fila
+df_con_centroides = df_centros_clean.join(
+    df_centroides, 
+    on=GROUPING_COL, 
+    how="inner"
+)
+
+
+# 5.2.2 Crear una udf que permita calcular la distancia euclideana.
+print("\n5.2.2: Creando UDF y calculando la Distancia Euclidiana...")
+# Fórmula: d = sqrt((x2 - x1)^2 + (y2 - y1)^2) 
+
+# Definición de la UDF para la Distancia Euclidiana
+def distancia_euclidiana(x1: float, y1: float, x2: float, y2: float) -> float:
+    """Calcula la distancia euclidiana entre dos puntos (x1, y1) y (x2, y2)."""
+    if None in (x1, y1, x2, y2):
+        return float('inf') 
+    return sqrt((x2 - x1)**2 + (y2 - y1)**2)
+
+# Registrar la UDF
+udf_distancia = udf(distancia_euclidiana, DoubleType())
+
+# Aplicar la UDF para calcular la distancia de cada centro al centroide de su grupo
+df_distancia = df_con_centroides.withColumn(
+    "distancia_al_centroide",
+    udf_distancia(
+        col("coord_x"), 
+        col("coord_y"), 
+        col("centroide_x"), 
+        col("centroide_y")
+    )
+)
+
+
+# 5.2.3 Identificar cuál es la unidad educativa con menor distancia dentro de cada grupo.
+print("\n5.2.3: Identificando el centro de reunión más céntrico...")
+
+# Definir la ventana para obtener el centro con la menor distancia (rank = 1) por grupo
+window_min_distancia = Window.partitionBy(GROUPING_COL).orderBy(col("distancia_al_centroide").asc())
+
+# Aplicar el ranking
+df_ranking = df_distancia.withColumn(
+    "rank_distancia",
+    rank().over(window_min_distancia)
+)
+
+# Filtrar por el centro más céntrico (rank = 1) y seleccionar las columnas finales
+df_centros_reunion = df_ranking.filter(col("rank_distancia") == 1).select(
+    col(GROUPING_COL),
+    col("nombre_unidad_educativa").alias("centro_reunion_elegido"),
+    round(col("distancia_al_centroide"), 4).alias("distancia_al_centroide"),
+    round(col("centroide_x"), 4).alias("centroide_x"),
+    round(col("centroide_y"), 4).alias("centroide_y")
+).orderBy(col(GROUPING_COL).asc())
+
+# Mostrar el resultado final
+print("\n--- Resultado: Centro Más Céntrico por Tipo de Titularidad ---")
+df_centros_reunion.show(truncate=False)
+
+#################################################
+
+# Detener la sesión de Spark
+spark.stop()

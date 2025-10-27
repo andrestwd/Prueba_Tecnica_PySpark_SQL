@@ -1,0 +1,54 @@
+# Ejercicio # 2
+conn = sqlite3.connect('test.db')
+
+####PROGRAME SU RESPUESTA DENTRO DEL CONN.EXECUTE ENTRE LAS COMILLAS
+
+cursor = conn.execute('''
+WITH Ranking_Grupo AS (
+    -- 1. Determinar la posición (Rank) de cada equipo dentro de su grupo
+    SELECT
+        equipo,
+        grupo,
+        puntos,
+        gol_diferencia,
+        -- RANK() asigna el mismo rango a empates, lo cual cumple la regla de desempate
+        RANK() OVER (PARTITION BY grupo ORDER BY puntos DESC, gol_diferencia DESC) AS Rank_Posicion
+    FROM Resultados_Qatar
+),
+Equipos_Clasificados AS (
+    -- 2. Seleccionar solo el 1er y 2do lugar (los clasificados)
+    SELECT
+        equipo,
+        grupo,
+        puntos,
+        gol_diferencia,
+        CASE
+            WHEN Rank_Posicion = 1 THEN '1º del grupo ' || TRIM(REPLACE(grupo, 'GRUPO', ''))
+            WHEN Rank_Posicion = 2 THEN '2º del grupo ' || TRIM(REPLACE(grupo, 'GRUPO', ''))
+            ELSE NULL
+        END AS Rol_Clasificacion -- Formato: '1º del grupo A' o '2º del grupo B'
+    FROM Ranking_Grupo
+    WHERE Rank_Posicion IN (1, 2)
+)
+-- 3. Unir los clasificados con los partidos de la siguiente ronda
+SELECT
+    E.equipo,
+    E.grupo,
+    E.puntos AS "Total Puntos",
+    E.gol_diferencia AS "Gol Diferencia",
+    C.fecha || ' ' || C.hora AS "Fecha y Hora del Partido",
+    C.sede AS "Sede del Partido"
+FROM Equipos_Clasificados E
+INNER JOIN Clasificados C
+    ON C.partido LIKE '%' || E.Rol_Clasificacion || '%' -- Busca si el Rol_Clasificacion está en la columna 'partido'
+ORDER BY
+    E.grupo, E.puntos DESC, E.gol_diferencia DESC;
+''')
+
+print("Equipo | Grupo | Puntos | GD | Fecha y Hora del Partido | Sede")
+print("-" * 100)
+for row in cursor:
+    # Formatear la salida
+    print(f"{row[0]:<25} {row[1]:<8} {row[2]:<6} {row[3]:<4} {row[4]:<25} {row[5]}")
+
+conn.close()

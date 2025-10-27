@@ -1,0 +1,133 @@
+# Ejercicio 8 Pyspark
+
+import sys
+from pyspark.sql import SparkSession
+from pyspark.sql.types import *
+from pyspark.sql.functions import col, when, lit, rank, round, collect_list, struct, trim
+from pyspark.sql import Window
+from pyspark.sql.functions import desc, asc
+
+# Inicialización de SparkSession
+spark = SparkSession.builder\
+    .master("local")\
+    .appName("PySpark-Q4") \
+    .config('spark.ui.port', '4050')\
+    .getOrCreate()
+
+
+# Las listas de datos (jugador y pais) se definen dentro del script para su ejecución.
+
+# esquema de jugador: [(ranking, nombre, codigo_pais, numero_goles, numero_partidos_jugados)]
+jugador = [("1", "Cristiano Ronaldo", "32", "115", "184"),("2", "Ali Daei", "24", "109", "148"),("3", "Mokhtar Dahari", "28", "89", "142"),("4", "Ferenc Puskás", "20", "84", "89"),("5", "Lionel Messi", "5", "81", "158"),("6", "Sunil Chhetri", "21", "80", "125"),("7", "Ali Mabkhout", "13", "79", "104"),("8", "Godfrey Chitalu", "39", "79", "111"),("9", "Hussein Saeed", "23", "78", "137"),("10", "Pelé", "8", "77", "92"),("11", "Sándor Kocsis", "19", "75", "68"),("12", "Kunishige Kamamoto", "26", "75", "76"),("13", "Bashar Abdullah", "27", "75", "134"),("14", "Robert Lewandowski", "31", "74", "128"),("15", "Majed Abdullah", "4", "72", "117"),("16", "Kinnah Phiri", "29", "71", "117"),("17", "Kiatisuk Senamuang", "36", "71", "134"),("18", "Miroslav Klose", "1", "71", "137"),("19", "Piyapong Pue-on", "36", "70", "100"),("20", "Abdul Kadir", "22", "70", "111"),("21", "Stern John", "37", "70", "115"),("22", "Neymar", "8", "70", "116"),("23", "Gerd Müller", "2", "68", "62"),("24", "Romelu Lukaku", "6", "68", "101"),("25", "Carlos Ruiz Gutiérrez", "17", "68", "133"),("26", "Robbie Keane", "25", "68", "146"),("27", "Hossam Hassan", "12", "68", "176"),("28", "Luis Suárez", "38", "67", "130"),("29", "Didier Drogba", "11", "65", "105"),("30", "Jasem Al-Huwaidi", "27", "63", "83"),("31", "Ronaldo Nazario", "8", "62", "98"),("32", "Zlatan Ibrahimović", "35", "62", "120"),("33", "Ahmed Radhi", "23", "62", "121"),("34", "Abdul Ghani Minhat", "16", "61", "71"),("35", "Edin Džeko", "7", "60", "118"),("36", "Imre Schlosser", "19", "59", "68"),("37", "David Villa", "14", "59", "98"),("38", "Cha Bum-Kun", "10", "58", "135"),("39", "Ali Ashfaq", "30", "57", "89"),("40", "Carlos Pavón", "18", "57", "101"),("41", "Clint Dempsey", "15", "57", "141"),("42", "Younis Mahmoud", "23", "57", "148"),("43", "Landon Donovan", "15", "57", "157"),("44", "Samuel Eto'o", "9", "56", "118"),("45", "Romário", "8", "55", "70"),("46", "Kazuyoshi Miura", "26", "55", "89"),("47", "Jan Koller", "33", "55", "91"),("48", "Iswadi Idris", "22", "55", "97"),("49", "Fandi Ahmad", "34", "55", "101"),("50", "Joachim Streich", "3", "55", "102")]
+
+# esquema de país: [(codigo_pais, nombre_pais)]
+pais = [("1", " Alemania"),("2", " Alemania Federal"),("3", " Alemania Oriental"),("4", " Arabia Saudita"),("5", " Argentina"),("6", " Bélgica"),("7", " Bosnia y Herzegovina"),("8", " Brasil"),("9", " Camerún"),("10", " Corea del Sur"),("11", " Costa de Marfil"),("12", " Egipto"),("13", " Emiratos Arabes Unidos"),("14", " España"),("15", " Estados Unidos"),("16", " Federación Malaya/ Malasia"),("17", " Guatemala"),("18", " Honduras"),("19", " Hungria"),("20", " Hungria/ España"),("21", " India"),("22", " Indonesia"),("23", " Irak"),("24", " Irán"),("25", " Irlanda"),("26", " Japón"),("27", " Kuwait"),("28", " Malasia"),("29", " Malawi"),("30", " Maldivas"),("31", " Polonia"),("32", " Portugal"),("33", " República Checa"),("34", " Singapur"),("35", " Suecia"),("36", " Tailandia"),("37", " Trinidad y Tobago"),("38", " Uruguay"),("39", " Zambia")]
+
+
+# 4.1 Crear dos dataframes en función de las listas.
+print("4.1: Creando DataFrames...")
+
+schema_jugador = StructType([
+    StructField("ranking_str", StringType(), True),
+    StructField("nombre_jugador", StringType(), True),
+    StructField("codigo_pais", StringType(), True),
+    StructField("goles_str", StringType(), True),
+    StructField("partidos_str", StringType(), True)
+])
+
+df_jugador = spark.createDataFrame(jugador, schema=schema_jugador)
+df_pais = spark.createDataFrame(pais, schema=StructType([
+    StructField("codigo_pais", StringType(), True),
+    StructField("nombre_pais", StringType(), True)
+]))
+
+# Conversión de tipos de datos en df_jugador para cálculos
+df_jugador_clean = (
+    df_jugador
+    .withColumnRenamed("ranking_str", "ranking_anterior")
+    .withColumn("ranking_anterior", col("ranking_anterior").cast(IntegerType()))
+    .withColumn("goles", col("goles_str").cast(IntegerType()))
+    .withColumn("partidos", col("partidos_str").cast(IntegerType()))
+    .drop("goles_str", "partidos_str")
+)
+
+# Limpiar espacios en blanco del nombre del país
+df_pais_clean = df_pais.withColumn("nombre_pais", trim(col("nombre_pais")))
+
+
+# 4.2. Consolidar los datos y crear una marca que permita identificar el mejor
+#      jugador rankeado por país (ranking_anterior más bajo).
+print("4.2: Consolidando y marcando el mejor rankeado por país...")
+
+# Join de los DataFrames
+df_consolidado = df_jugador_clean.join(df_pais_clean, on="codigo_pais", how="inner")
+
+# Definir la ventana para el mejor rankeado (basado en el ranking original)
+window_mejor_rankeado = Window.partitionBy("codigo_pais").orderBy(col("ranking_anterior").asc())
+
+df_mejor_rankeado = df_consolidado.withColumn(
+    "es_mejor_rankeado_por_pais",
+    when(rank().over(window_mejor_rankeado) == 1, lit("Sí")).otherwise(lit("No"))
+)
+
+
+# 4.3. Proponga un nuevo ranking en base a un indicador: Goles por Partido (GPP).
+#      (Se usa Goles / Partidos Jugados como indicador, desempate por Goles)
+print("4.3: Calculando Goles por Partido y el Nuevo Ranking...")
+
+# 1. Calcular el indicador GPP. Se usa when() para evitar divisiones por cero.
+df_indicador = df_mejor_rankeado.withColumn(
+    "goles_por_partido",
+    when(col("partidos") > 0, round(col("goles") / col("partidos"), 4)).otherwise(lit(0.0))
+)
+
+# 2. Definir la ventana para el nuevo ranking (basado en GPP descendente, desempate por Goles)
+window_nuevo_ranking = Window.orderBy(col("goles_por_partido").desc(), col("goles").desc())
+
+df_ranking_final = df_indicador.withColumn(
+    "ranking_actual",
+    rank().over(window_nuevo_ranking)
+)
+
+
+# Mostrar una muestra de los resultados consolidados (opcional para verificación)
+print("\n--- Vista Preliminar de los Resultados Consolidados ---")
+df_ranking_final.select(
+    "nombre_jugador",
+    "nombre_pais",
+    "ranking_anterior",
+    "goles_por_partido",
+    "ranking_actual",
+    "es_mejor_rankeado_por_pais"
+).orderBy(col("ranking_actual").asc()).show(10, truncate=False)
+
+
+# 4.4. Almacenar el resultado en un archivo json anidado.
+print("\n4.4: Generando archivo JSON anidado...")
+
+# 1. Crear la estructura anidada del jugador (struct)
+df_jugadores_struct = df_ranking_final.withColumn(
+    "jugador_data",
+    struct(
+        col("nombre_jugador"),
+        col("ranking_anterior"),
+        col("ranking_actual")
+    )
+)
+
+# 2. Agrupar por país y recolectar la lista de jugadores (collect_list)
+
+df_paises_agrupados = (
+    df_jugadores_struct
+    .groupBy("codigo_pais", "nombre_pais")
+    .agg(collect_list("jugador_data").alias("juadores"))
+    .orderBy("codigo_pais") # Ordenar para consistencia
+)
+
+# 3. Escribir el resultado. Se usa coalesce(1) para generar un único archivo de salida.
+output_path = "/tmp/Nuevo_Ranking.json"
+df_paises_agrupados.coalesce(1).write.mode("overwrite").json(output_path)
+
+print(f"\nProceso completado. Archivo JSON con estructura anidada guardado en: {output_path}")
+
+spark.stop()
